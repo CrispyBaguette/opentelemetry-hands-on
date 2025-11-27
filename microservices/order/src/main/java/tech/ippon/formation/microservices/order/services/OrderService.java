@@ -1,10 +1,13 @@
 package tech.ippon.formation.microservices.order.services;
 
 import java.io.IOException;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
+
+import io.micrometer.core.instrument.MeterRegistry;
 import retrofit2.Response;
 import tech.ippon.formation.microservices.order.clients.ShoppingCartClient;
 import tech.ippon.formation.microservices.order.domain.Order;
@@ -15,33 +18,36 @@ import tech.ippon.formation.microservices.order.exception.UnknownException;
 @Service
 public class OrderService {
 
-  private final Logger logger = LoggerFactory.getLogger(OrderService.class);
+    private final Logger logger = LoggerFactory.getLogger(OrderService.class);
 
-  private final KafkaTemplate<String, Object> kafkaProducer;
-  private final ShoppingCartClient shoppingCartClient;
+    private final KafkaTemplate<String, Object> kafkaProducer;
+    private final ShoppingCartClient shoppingCartClient;
+    private final MeterRegistry meterRegistry;
 
-  public OrderService(KafkaTemplate<String, Object> kafkaProducer, ShoppingCartClient shoppingCartClient) {
-    this.kafkaProducer = kafkaProducer;
-    this.shoppingCartClient = shoppingCartClient;
-  }
-
-  public void createOrder(Order order) {
-    final Response<ShoppingCart> response;
-    try {
-      response = shoppingCartClient.getShoppingCart(order.getCartId()).execute();
-    } catch (IOException e) {
-      logger.warn("Error while retrieving cart with id: {} => {}", order.getCartId(), e.getMessage());
-      throw new UnknownException();
+    public OrderService(KafkaTemplate<String, Object> kafkaProducer, ShoppingCartClient shoppingCartClient, MeterRegistry meterRegistry) {
+        this.kafkaProducer = kafkaProducer;
+        this.shoppingCartClient = shoppingCartClient;
+        this.meterRegistry = meterRegistry;
     }
 
-    if (!response.isSuccessful()) {
-      logger.warn("Failed to retrieve cart with id: {}", order.getCartId());
-      throw new CartNotFoundException();
+    public void createOrder(Order order) {
+        final Response<ShoppingCart> response;
+        try {
+            response = shoppingCartClient.getShoppingCart(order.getCartId()).execute();
+        } catch (IOException e) {
+            logger.warn("Error while retrieving cart with id: {} => {}", order.getCartId(), e.getMessage());
+            throw new UnknownException();
+        }
+
+        if (!response.isSuccessful()) {
+            logger.warn("Failed to retrieve cart with id: {}", order.getCartId());
+            throw new CartNotFoundException();
+        }
+
+        order.setCart(response.body());
+
+        logger.info("Order created: {}", order);
+        meterRegistry.counter("orders.created").increment();
+        kafkaProducer.send("orders", order);
     }
-
-    order.setCart(response.body());
-
-    logger.info("Order created: {}", order);
-    kafkaProducer.send("orders", order);
-  }
 }
